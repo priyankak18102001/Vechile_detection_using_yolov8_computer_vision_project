@@ -1,0 +1,580 @@
+import streamlit as st
+from ultralytics import YOLO
+import tempfile
+import os
+import subprocess
+import pandas as pd
+import matplotlib.pyplot as plt
+import gdown
+import zipfile 
+import plotly.express as px
+import lap
+
+Dataset_path = "VehiclesDetectionDataset"
+def download_dataset():
+    if not os.path.exists(Dataset_path):
+
+        url = "https://drive.google.com/drive/folders/1utdLnY8JVhPdGtr8DCpqcoJMJtkh2_Pc?usp=sharing"
+        output = "dataset.zip"
+
+        gdown.download(url, output, quiet=False)
+
+        with zipfile.ZipFile(output, 'r') as zip_ref:
+            zip_ref.extractall(".")
+
+        os.remove(output)
+
+download_dataset()
+
+st.set_page_config(page_title="Vehicle Detection Dashboard", layout="wide")
+
+# -----------------------------
+# Sidebar Navigation
+# -----------------------------
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to", ["Home", "Detection", "Analytics","Model Evaluation"])
+
+# -----------------------------
+# Load Model (cached)
+# -----------------------------
+@st.cache_resource
+def load_model():
+
+    return YOLO("best.pt")   # safer for deployment
+model = load_model()
+# -----------------------------
+# HOME PAGE
+# -----------------------------
+if page == "Home":
+    st.title("🚗 Vehicle Detection System")
+    st.markdown("""
+    ### Computer Vision Project
+    
+    This system performs:
+    - Real-time vehicle detection
+    - Vehicle classification
+    - Video processing
+    - Analytics visualization
+    """)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Model", "YOLOv8")
+    col2.metric("Classes", "5 Vehicles")
+    col3.metric("Framework", "PyTorch")
+
+# -----------------------------
+# DETECTION PAGE
+# -----------------------------
+
+elif page == "Detection":
+  
+    st.title("🎥 Upload & Detect Vehicles")
+
+    uploaded_file = st.file_uploader("Upload Traffic Video", type=["mp4", "avi", "mov"])
+    confidence = st.slider("Detection Confidence", 0.1, 1.0, 0.25, 0.05)
+    
+    if uploaded_file is not None:
+
+        st.video(uploaded_file)
+
+        if st.button("Run Detection"):
+
+            file_extension = uploaded_file.name.split('.')[-1]
+
+            # Create uploads folder if not exists
+            os.makedirs("uploads", exist_ok=True)
+
+            video_path = os.path.join("uploads", uploaded_file.name)
+
+            with open(video_path, "wb") as f:
+               f.write(uploaded_file.getbuffer())
+
+            st.info("Processing video... Please wait!")
+            
+
+            results = list(model.track(
+                    source=video_path,
+                    save=True,
+                    conf=confidence,
+                    imgsz=320,
+                    vid_stride=8,
+                    tracker="bytetrack.yaml",
+                    stream=True
+               ))
+            
+            save_dir = results[0].save_dir
+
+            video_files = [
+                f for f in os.listdir(save_dir)
+                if f.endswith((".mp4", ".avi", ".mov"))
+            ]
+
+            if video_files:
+
+                original_video = os.path.join(save_dir, video_files[0])
+                final_video = os.path.join(save_dir, "browser_output.mp4")
+
+                ffmpeg_command = [
+                    "ffmpeg",
+                    "-y",
+                    "-i", original_video,
+                    "-vcodec", "libx264",
+                    "-acodec", "aac",
+                    final_video
+                ]
+                import subprocess
+
+                process = subprocess.run(
+                ffmpeg_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+                )
+
+                if process.returncode != 0:
+                   st.error("FFmpeg conversion failed")
+                   final_video = original_video
+
+                import time
+                time.sleep(2)   
+
+                st.success("Detection Complete")
+
+                st.video(final_video)
+
+                # -------------------------
+                # VEHICLE COUNTING LINE
+                # -------------------------
+                vehicle_count = 0
+                counted_ids = set()
+                line_y = 200
+
+                for r in results:
+
+                    if r.boxes is None or r.boxes.id is None:
+                        continue
+
+                    boxes = r.boxes.xyxy.cpu().numpy()
+                    ids = r.boxes.id.cpu().numpy()
+
+                    for box, track_id in zip(boxes, ids):
+
+                      x1,y1,x2,y2 = map(int,box)
+                      center_y = (y1+y2)//2
+                      track_id = int(track_id)
+
+                      if center_y > line_y and track_id not in counted_ids:
+
+                         vehicle_count += 1
+                         counted_ids.add(track_id)
+                st.metric("🚗 Vehicles Crossing Line", vehicle_count)   
+                # -------------------------
+                # TRAFFIC HEATMAP
+                # -------------------------
+                import numpy as np
+                import cv2
+
+                heatmap = np.zeros((1080,1920))
+
+                for r in results:
+                   for box in r.boxes.xyxy:
+
+                      x1,y1,x2,y2 = map(int,box)
+
+                      cx = (x1+x2)//2
+                      cy = (y1+y2)//2
+
+                      if cy < 1080 and cx < 1920:
+                          heatmap[cy,cx] += 1
+
+                heatmap = cv2.GaussianBlur(heatmap,(51,51),0)
+
+                heatmap_norm = cv2.normalize(
+                    heatmap,
+                    None,
+                    0,
+                    255,
+                    cv2.NORM_MINMAX
+                )
+
+                heatmap_uint8 = heatmap_norm.astype("uint8")
+
+                heatmap_color = cv2.applyColorMap(
+                      heatmap_uint8,
+                      cv2.COLORMAP_JET
+                )
+
+                st.subheader("🔥 Traffic Heatmap")
+                st.image(heatmap_color)
+
+                # -------------------------
+                # VEHICLE TYPE COUNT
+                # -------------------------
+
+                class_counts = {}
+
+                for r in results:
+                   for box in r.boxes:
+
+                    cls_id = int(box.cls)
+                    cls_name = model.names[cls_id]
+
+                    class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+
+                st.session_state["counts"] = class_counts
+
+                # -------------------------
+                # VEHICLE LOG
+                # -------------------------
+                import time
+
+                vehicle_log = []
+
+                for r in results:
+                    for box in r.boxes:
+
+                        cls_id = int(box.cls)
+                        cls_name = model.names[cls_id]
+                        conf = float(box.conf)
+
+                        vehicle_log.append({
+                            "Vehicle": cls_name,
+                            "Confidence": round(conf,3),
+                            "Time": time.strftime("%H:%M:%S")
+                        })
+
+                st.session_state["vehicle_log"] = vehicle_log
+            
+# -----------------------------
+# ANALYTICS PAGE
+# -----------------------------
+
+elif page == "Analytics":
+
+    st.title("📊 Vehicle Analytics Dashboard")
+
+    if "counts" in st.session_state:
+
+        counts = st.session_state["counts"]
+
+        total_vehicles = sum(counts.values())
+        unique_classes = len(counts)
+        most_common = max(counts, key=counts.get)
+
+        # -----------------------------
+        # METRICS
+        # -----------------------------
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("🚗 Total Vehicles", total_vehicles)
+        col2.metric("📦 Vehicle Types", unique_classes)
+        col3.metric("🔥 Most Frequent", most_common)
+
+        df = pd.DataFrame({
+            "Vehicle Type": list(counts.keys()),
+            "Count": list(counts.values())
+        })
+
+        st.subheader("📋 Vehicle Count Table")
+        st.dataframe(df, use_container_width=True)
+
+        # -----------------------------
+        # BAR CHART
+        # -----------------------------
+        st.subheader("📊 Vehicle Distribution")
+
+        fig_bar = px.bar(
+            df,
+            x="Vehicle Type",
+            y="Count",
+            color="Vehicle Type",
+            text="Count"
+        )
+
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # -----------------------------
+        # PIE CHART
+        # -----------------------------
+        st.subheader("🥧 Vehicle Share")
+
+        fig_pie = px.pie(
+            df,
+            names="Vehicle Type",
+            values="Count"
+        )
+
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+        # -----------------------------
+        # DETECTION LOG TABLE
+        # -----------------------------
+        if "vehicle_log" in st.session_state:
+
+            log_df = pd.DataFrame(st.session_state["vehicle_log"])
+
+            st.subheader("📋 Detection Log")
+
+            st.dataframe(log_df, use_container_width=True)
+
+            # -----------------------------
+            # VEHICLES OVER TIME
+            # -----------------------------
+            st.subheader("⏱ Traffic Trend")
+
+            trend_df = log_df.groupby("Time").size().reset_index(name="Vehicles")
+
+            fig_trend = px.line(
+                trend_df,
+                x="Time",
+                y="Vehicles",
+                markers=True,
+                title="Vehicles Detected Over Time"
+            )
+
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+            # -----------------------------
+            # CONFIDENCE DISTRIBUTION
+            # -----------------------------
+            st.subheader("🎯 Detection Confidence")
+
+            fig_conf = px.histogram(
+                log_df,
+                x="Confidence",
+                color="Vehicle",
+                nbins=20
+            )
+
+            st.plotly_chart(fig_conf, use_container_width=True)
+
+        # -----------------------------
+        # TRAFFIC INSIGHTS
+        # -----------------------------
+        st.subheader("🧠 Traffic Insights")
+
+        st.info(f"""
+        🚗 **Total vehicles detected:** {total_vehicles}
+
+        📊 **Most frequent vehicle:** {most_common}
+
+        🏙 Traffic flow indicates that **{most_common}** dominates this road segment.
+        """)
+
+        # -----------------------------
+        # DOWNLOAD REPORT
+        # -----------------------------
+        csv = df.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            "⬇ Download Vehicle Report",
+            csv,
+            "vehicle_report.csv",
+            "text/csv"
+        )
+
+    else:
+        st.warning("⚠ Run detection first to see analytics.")
+
+elif page == "Model Evaluation":
+
+    st.title("📈 Model Evaluation Dashboard")
+
+    if st.button("Run Validation"):
+
+        st.info("Running validation on dataset... Please wait.")
+
+        try:
+            import os
+
+            dataset_yaml = os.path.abspath("VehiclesDetectionDataset/dataset.yaml")
+
+            st.write("Using dataset:", dataset_yaml)
+
+            metrics = model.val(data=dataset_yaml)
+            st.success("Validation Complete")
+
+        except Exception:
+
+            st.warning("⚠️ Dataset not available in deployed environment.")
+            st.info("Model validation can only run locally because the dataset is not uploaded.")
+
+            st.subheader("📊 Precomputed Model Performance")
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("mAP@0.5", "0.629")
+            col2.metric("mAP@0.5:0.95", "0.485")
+            col3.metric("Precision", "0.737")
+            col4.metric("Recall", "0.548")
+
+            st.stop()
+
+        # =====================================
+        # 📊 OVERALL METRICS
+        # =====================================
+        st.subheader("📊 Overall Performance")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric("mAP@0.5", f"{metrics.box.map50:.3f}")
+        col2.metric("mAP@0.5:0.95", f"{metrics.box.map:.3f}")
+        col3.metric("Precision", f"{metrics.box.mp:.3f}")
+        col4.metric("Recall", f"{metrics.box.mr:.3f}")
+
+        # =====================================
+        # 📋 PER-CLASS METRICS
+        # =====================================
+        st.subheader("📋 Per-Class Metrics")
+
+        class_names = ['Ambulance', 'Bus', 'Car', 'Motorcycle', 'Truck']
+
+        df_metrics = pd.DataFrame({
+            "Class": class_names,
+            "Precision": metrics.box.p,
+            "Recall": metrics.box.r,
+            "mAP@0.5": metrics.box.ap50,
+            "mAP@0.5:0.95": metrics.box.ap
+        })
+
+        df_metrics["F1 Score"] = 2 * (
+            df_metrics["Precision"] * df_metrics["Recall"]
+        ) / (
+            df_metrics["Precision"] + df_metrics["Recall"] + 1e-6
+        )
+
+        df_metrics_sorted = df_metrics.sort_values("mAP@0.5", ascending=False)
+
+        st.dataframe(
+            df_metrics_sorted.style
+            .background_gradient(subset=["mAP@0.5"], cmap="Greens")
+            .background_gradient(subset=["F1 Score"], cmap="Blues")
+        )
+
+        # =====================================
+        # 🧠 BRIEF ANALYSIS
+        # =====================================
+        st.subheader("🧠 Brief Analysis")
+
+        best_class = df_metrics.loc[df_metrics["mAP@0.5"].idxmax(), "Class"]
+        worst_class = df_metrics.loc[df_metrics["mAP@0.5"].idxmin(), "Class"]
+
+        st.write(f"""
+        The model achieves an overall **mAP@0.5 of {metrics.box.map50:.2f}**, 
+        indicating good object detection performance.
+
+        The best performing class is **{best_class}**, while the weakest class is **{worst_class}**.
+
+        A Precision of **{metrics.box.mp:.2f}** shows reliable predictions,
+        while Recall of **{metrics.box.mr:.2f}** indicates moderate detection coverage.
+        """)
+
+        # =====================================
+        # 🔎 CONFUSION MATRIX
+        # =====================================
+        st.subheader("🔎 Confusion Matrix")
+
+        cm = metrics.confusion_matrix.matrix
+
+        if cm.shape[0] > len(class_names):
+            cm = cm[:len(class_names), :len(class_names)]
+
+        fig, ax = plt.subplots(figsize=(8,6))
+        ax.imshow(cm, cmap="Blues")
+
+        ax.set_xticks(range(len(class_names)))
+        ax.set_yticks(range(len(class_names)))
+        ax.set_xticklabels(class_names, rotation=45)
+        ax.set_yticklabels(class_names)
+
+        plt.xlabel("Predicted Class")
+        plt.ylabel("Actual Class")
+        plt.title("Confusion Matrix")
+
+        for i in range(len(class_names)):
+            for j in range(len(class_names)):
+                ax.text(j, i, int(cm[i, j]),
+                        ha="center", va="center", color="black")
+
+        st.pyplot(fig)
+
+        # =====================================
+        # 📊 mAP PER CLASS BAR CHART
+        # =====================================
+        st.subheader("📊 mAP@0.5 per Class")
+
+        fig2, ax2 = plt.subplots()
+        ax2.bar(df_metrics_sorted["Class"], df_metrics_sorted["mAP@0.5"])
+        ax2.set_ylabel("mAP@0.5")
+        ax2.set_title("mAP@0.5 per Class")
+        plt.xticks(rotation=45)
+
+        st.pyplot(fig2)
+
+        # =====================================
+        # 📈 PR & F1 CURVES
+        # =====================================
+        import glob
+
+        val_folders = sorted(glob.glob("runs/detect/val*"))
+
+        if val_folders:
+            latest_val = val_folders[-1]
+
+            pr_curve = os.path.join(latest_val, "PR_curve.png")
+            f1_curve = os.path.join(latest_val, "F1_curve.png")
+
+            if os.path.exists(pr_curve):
+                st.subheader("📈 Precision-Recall Curve")
+                st.image(pr_curve)
+
+            if os.path.exists(f1_curve):
+                st.subheader("📈 F1 Score Curve")
+                st.image(f1_curve)
+
+        # =====================================
+        # 📥 DOWNLOAD REPORT
+        # =====================================
+        st.subheader("📥 Download Evaluation Report")
+
+        csv = df_metrics_sorted.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            "⬇ Download Evaluation Report (CSV)",
+            csv,
+            "evaluation_report.csv",
+            "text/csv"
+        )
+
+        # =====================================
+        # 🖼 SAMPLE IMAGE PREDICTIONS
+        # =====================================
+        st.subheader("🖼 Sample Image Predictions")
+
+        predict_folders = sorted(glob.glob("runs/detect/predict*"))
+
+        if predict_folders:
+            latest_predict = predict_folders[-1]
+
+            image_files = glob.glob(os.path.join(latest_predict, "*.jpg"))
+            image_files += glob.glob(os.path.join(latest_predict, "*.png"))
+
+            if image_files:
+                cols = st.columns(3)
+
+                for i, img_path in enumerate(image_files[:6]):
+                    cols[i % 3].image(img_path, use_container_width=True)
+
+        # =====================================
+        # 🎬 SAMPLE VIDEO
+        # =====================================
+        st.subheader("🎬 Sample Video Prediction")
+
+        if predict_folders:
+            video_files = [
+                f for f in os.listdir(latest_predict)
+                if f.endswith((".mp4", ".avi"))
+            ]
+
+            if video_files:
+                video_path = os.path.join(latest_predict, video_files[0])
+                with open(video_path, "rb") as v:
+                    st.video(v.read())

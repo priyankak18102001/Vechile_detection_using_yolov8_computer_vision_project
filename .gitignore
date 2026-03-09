@@ -1,0 +1,11 @@
+venv/
+runs/
+uploads/
+__pycache__/
+tempCodeRunnerFile.py
+*.mp4 
+*.png 
+*.jpg 
+*.cache
+runs/
+venv/
