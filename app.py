@@ -18,10 +18,6 @@ def download_dataset():
         output = "dataset.zip"
 
         gdown.download(url, output, quiet=False)
-
-        with zipfile.ZipFile(output, 'r') as zip_ref:
-            zip_ref.extractall(".")
-
         os.remove(output)
 
 download_dataset()
@@ -578,3 +574,4 @@ elif page == "Model Evaluation":
                 video_path = os.path.join(latest_predict, video_files[0])
                 with open(video_path, "rb") as v:
                     st.video(v.read())
+
