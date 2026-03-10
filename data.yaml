@@ -1,3 +1,4 @@
+url = "https://drive.google.com/drive/folders/1utdLnY8JVhPdGtr8DCpqcoJMJtkh2_Pc?usp=sharing"
 path:  VehiclesDetectionDataset
 train: train/images
 val: valid/images
