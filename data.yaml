@@ -1,5 +1,5 @@
 url = "https://drive.google.com/drive/folders/1utdLnY8JVhPdGtr8DCpqcoJMJtkh2_Pc?usp=sharing"
-path:  VehiclesDetectionDataset
+path: computer_vision_project/Object_detection/VehiclesDetectionDataset
 train: train/images
 val: valid/images
 test: test/images
