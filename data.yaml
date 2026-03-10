@@ -1,4 +1,4 @@
-path:  computer_vision_project/Object_detection/VehiclesDetectionDataset
+path:  VehiclesDetectionDataset
 train: train/images
 val: valid/images
 test: test/images
