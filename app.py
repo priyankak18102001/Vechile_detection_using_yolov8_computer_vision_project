@@ -382,7 +382,7 @@ elif page == "Model Evaluation":
         try:
             import os
 
-            dataset_yaml = os.path.abspath("VehiclesDetectionDataset/dataset.yaml")
+            dataset_yaml = os.path.abspath("data.yaml")
 
             st.write("Using dataset:", dataset_yaml)
 
@@ -574,4 +574,5 @@ elif page == "Model Evaluation":
                 video_path = os.path.join(latest_predict, video_files[0])
                 with open(video_path, "rb") as v:
                     st.video(v.read())
+
 
